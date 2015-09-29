@@ -250,22 +250,21 @@ void rcu_sched_qs(void)
 {
 	unsigned long flags;
 
-	if (__this_cpu_read(rcu_sched_data.cpu_no_qs.s)) {
-		trace_rcu_grace_period(TPS("rcu_sched"),
-				       __this_cpu_read(rcu_sched_data.gpnum),
-				       TPS("cpuqs"));
-		__this_cpu_write(rcu_sched_data.cpu_no_qs.b.norm, false);
-		if (!__this_cpu_read(rcu_sched_data.cpu_no_qs.b.exp))
-			return;
-		local_irq_save(flags);
-		if (__this_cpu_read(rcu_sched_data.cpu_no_qs.b.exp)) {
-			__this_cpu_write(rcu_sched_data.cpu_no_qs.b.exp, false);
-			rcu_report_exp_rdp(&rcu_sched_state,
-					   this_cpu_ptr(&rcu_sched_data),
-					   true);
-		}
-		local_irq_restore(flags);
+	if (!__this_cpu_read(rcu_sched_data.cpu_no_qs.s))
+		return;
+	trace_rcu_grace_period(TPS("rcu_sched"),
+			       __this_cpu_read(rcu_sched_data.gpnum),
+			       TPS("cpuqs"));
+	__this_cpu_write(rcu_sched_data.cpu_no_qs.b.norm, false);
+	if (!__this_cpu_read(rcu_sched_data.cpu_no_qs.b.exp))
+		return;
+	local_irq_save(flags);
+	if (__this_cpu_read(rcu_sched_data.cpu_no_qs.b.exp)) {
+		__this_cpu_write(rcu_sched_data.cpu_no_qs.b.exp, false);
+		rcu_report_exp_rdp(&rcu_sched_state,
+				   this_cpu_ptr(&rcu_sched_data), true);
 	}
+	local_irq_restore(flags);
 }
 
 void rcu_bh_qs(void)
@@ -1228,7 +1227,7 @@ static void rcu_dump_cpu_stacks(struct rcu_state *rsp)
 	struct rcu_node *rnp;
 
 	rcu_for_each_leaf_node(rsp, rnp) {
-		raw_spin_lock_irqsave(&rnp->lock, flags);
+		raw_spin_lock_irqsave_rcu_node(rnp, flags);
 		if (rnp->qsmask != 0) {
 			for (cpu = 0; cpu <= rnp->grphi - rnp->grplo; cpu++)
 				if (rnp->qsmask & (1UL << cpu))
@@ -1257,7 +1256,7 @@ static void print_other_cpu_stall(struct rcu_state *rsp, unsigned long gpnum)
 
 	/* Only let one CPU complain about others per time interval. */
 
-	raw_spin_lock_irqsave(&rnp->lock, flags);
+	raw_spin_lock_irqsave_rcu_node(rnp, flags);
 	delta = jiffies - READ_ONCE(rsp->jiffies_stall);
 	if (delta < RCU_STALL_RAT_DELAY || !rcu_gp_in_progress(rsp)) {
 		raw_spin_unlock_irqrestore(&rnp->lock, flags);
@@ -1280,7 +1279,7 @@ static void print_other_cpu_stall(struct rcu_state *rsp, unsigned long gpnum)
 #endif
 	print_cpu_stall_info_begin();
 	rcu_for_each_leaf_node(rsp, rnp) {
-		raw_spin_lock_irqsave(&rnp->lock, flags);
+		raw_spin_lock_irqsave_rcu_node(rnp, flags);
 		ndetected += rcu_print_task_stall(rnp);
 		if (rnp->qsmask != 0) {
 			for (cpu = 0; cpu <= rnp->grphi - rnp->grplo; cpu++)
@@ -1360,7 +1359,7 @@ static void print_cpu_stall(struct rcu_state *rsp)
 
 	rcu_dump_cpu_stacks(rsp);
 
-	raw_spin_lock_irqsave(&rnp->lock, flags);
+	raw_spin_lock_irqsave_rcu_node(rnp, flags);
 	if (ULONG_CMP_GE(jiffies, READ_ONCE(rsp->jiffies_stall)))
 		WRITE_ONCE(rsp->jiffies_stall,
 			   jiffies + 3 * rcu_jiffies_till_stall_check() + 3);
@@ -1569,10 +1568,8 @@ rcu_start_future_gp(struct rcu_node *rnp, struct rcu_data *rdp,
 	 * hold it, acquire the root rcu_node structure's lock in order to
 	 * start one (if needed).
 	 */
-	if (rnp != rnp_root) {
-		raw_spin_lock(&rnp_root->lock);
-		smp_mb__after_unlock_lock();
-	}
+	if (rnp != rnp_root)
+		raw_spin_lock_rcu_node(rnp_root);
 
 	/*
 	 * Get a new grace-period number.  If there really is no grace
@@ -1821,11 +1818,10 @@ static void note_gp_changes(struct rcu_state *rsp, struct rcu_data *rdp)
 	if ((rdp->gpnum == READ_ONCE(rnp->gpnum) &&
 	     rdp->completed == READ_ONCE(rnp->completed) &&
 	     !unlikely(READ_ONCE(rdp->gpwrap))) || /* w/out lock. */
-	    !raw_spin_trylock(&rnp->lock)) { /* irqs already off, so later. */
+	    !raw_spin_trylock_rcu_node(rnp)) { /* irqs already off, so later. */
 		local_irq_restore(flags);
 		return;
 	}
-	smp_mb__after_unlock_lock();
 	needwake = __note_gp_changes(rsp, rnp, rdp);
 	raw_spin_unlock_irqrestore(&rnp->lock, flags);
 	if (needwake)
@@ -1849,8 +1845,7 @@ static int rcu_gp_init(struct rcu_state *rsp)
 	struct rcu_node *rnp = rcu_get_root(rsp);
 
 	WRITE_ONCE(rsp->gp_activity, jiffies);
-	raw_spin_lock_irq(&rnp->lock);
-	smp_mb__after_unlock_lock();
+	raw_spin_lock_irq_rcu_node(rnp);
 	if (!READ_ONCE(rsp->gp_flags)) {
 		/* Spurious wakeup, tell caller to go back to sleep.  */
 		raw_spin_unlock_irq(&rnp->lock);
@@ -1882,8 +1877,7 @@ static int rcu_gp_init(struct rcu_state *rsp)
 	 */
 	rcu_for_each_leaf_node(rsp, rnp) {
 		rcu_gp_slow(rsp, gp_preinit_delay);
-		raw_spin_lock_irq(&rnp->lock);
-		smp_mb__after_unlock_lock();
+		raw_spin_lock_irq_rcu_node(rnp);
 		if (rnp->qsmaskinit == rnp->qsmaskinitnext &&
 		    !rnp->wait_blkd_tasks) {
 			/* Nothing to do on this leaf rcu_node structure. */
@@ -1939,8 +1933,7 @@ static int rcu_gp_init(struct rcu_state *rsp)
 	 */
 	rcu_for_each_node_breadth_first(rsp, rnp) {
 		rcu_gp_slow(rsp, gp_init_delay);
-		raw_spin_lock_irq(&rnp->lock);
-		smp_mb__after_unlock_lock();
+		raw_spin_lock_irq_rcu_node(rnp);
 		rdp = this_cpu_ptr(rsp->rda);
 		rcu_preempt_check_blocked_tasks(rnp);
 		rnp->qsmask = rnp->qsmaskinit;
@@ -2008,8 +2001,7 @@ static void rcu_gp_fqs(struct rcu_state *rsp, bool first_time)
 	}
 	/* Clear flag to prevent immediate re-entry. */
 	if (READ_ONCE(rsp->gp_flags) & RCU_GP_FLAG_FQS) {
-		raw_spin_lock_irq(&rnp->lock);
-		smp_mb__after_unlock_lock();
+		raw_spin_lock_irq_rcu_node(rnp);
 		WRITE_ONCE(rsp->gp_flags,
 			   READ_ONCE(rsp->gp_flags) & ~RCU_GP_FLAG_FQS);
 		raw_spin_unlock_irq(&rnp->lock);
@@ -2028,8 +2020,7 @@ static void rcu_gp_cleanup(struct rcu_state *rsp)
 	struct rcu_node *rnp = rcu_get_root(rsp);
 
 	WRITE_ONCE(rsp->gp_activity, jiffies);
-	raw_spin_lock_irq(&rnp->lock);
-	smp_mb__after_unlock_lock();
+	raw_spin_lock_irq_rcu_node(rnp);
 	gp_duration = jiffies - rsp->gp_start;
 	if (gp_duration > rsp->gp_max)
 		rsp->gp_max = gp_duration;
@@ -2054,8 +2045,7 @@ static void rcu_gp_cleanup(struct rcu_state *rsp)
 	 * grace period is recorded in any of the rcu_node structures.
 	 */
 	rcu_for_each_node_breadth_first(rsp, rnp) {
-		raw_spin_lock_irq(&rnp->lock);
-		smp_mb__after_unlock_lock();
+		raw_spin_lock_irq_rcu_node(rnp);
 		WARN_ON_ONCE(rcu_preempt_blocked_readers_cgp(rnp));
 		WARN_ON_ONCE(rnp->qsmask);
 		WRITE_ONCE(rnp->completed, rsp->gpnum);
@@ -2070,8 +2060,7 @@ static void rcu_gp_cleanup(struct rcu_state *rsp)
 		rcu_gp_slow(rsp, gp_cleanup_delay);
 	}
 	rnp = rcu_get_root(rsp);
-	raw_spin_lock_irq(&rnp->lock);
-	smp_mb__after_unlock_lock(); /* Order GP before ->completed update. */
+	raw_spin_lock_irq_rcu_node(rnp); /* Order GP before ->completed update. */
 	rcu_nocb_gp_set(rnp, nocb);
 
 	/* Declare grace period done. */
@@ -2319,8 +2308,7 @@ rcu_report_qs_rnp(unsigned long mask, struct rcu_state *rsp,
 		raw_spin_unlock_irqrestore(&rnp->lock, flags);
 		rnp_c = rnp;
 		rnp = rnp->parent;
-		raw_spin_lock_irqsave(&rnp->lock, flags);
-		smp_mb__after_unlock_lock();
+		raw_spin_lock_irqsave_rcu_node(rnp, flags);
 		oldmask = rnp_c->qsmask;
 	}
 
@@ -2367,8 +2355,7 @@ static void rcu_report_unblock_qs_rnp(struct rcu_state *rsp,
 	gps = rnp->gpnum;
 	mask = rnp->grpmask;
 	raw_spin_unlock(&rnp->lock);	/* irqs remain disabled. */
-	raw_spin_lock(&rnp_p->lock);	/* irqs already disabled. */
-	smp_mb__after_unlock_lock();
+	raw_spin_lock_rcu_node(rnp_p);	/* irqs already disabled. */
 	rcu_report_qs_rnp(mask, rsp, rnp_p, gps, flags);
 }
 
@@ -2390,8 +2377,7 @@ rcu_report_qs_rdp(int cpu, struct rcu_state *rsp, struct rcu_data *rdp)
 	struct rcu_node *rnp;
 
 	rnp = rdp->mynode;
-	raw_spin_lock_irqsave(&rnp->lock, flags);
-	smp_mb__after_unlock_lock();
+	raw_spin_lock_irqsave_rcu_node(rnp, flags);
 	if ((rdp->cpu_no_qs.b.norm &&
 	     rdp->rcu_qs_ctr_snap == __this_cpu_read(rcu_qs_ctr)) ||
 	    rdp->gpnum != rnp->gpnum || rnp->completed == rnp->gpnum ||
@@ -2617,8 +2603,7 @@ static void rcu_cleanup_dead_rnp(struct rcu_node *rnp_leaf)
 		rnp = rnp->parent;
 		if (!rnp)
 			break;
-		raw_spin_lock(&rnp->lock); /* irqs already disabled. */
-		smp_mb__after_unlock_lock(); /* GP memory ordering. */
+		raw_spin_lock_rcu_node(rnp); /* irqs already disabled. */
 		rnp->qsmaskinit &= ~mask;
 		rnp->qsmask &= ~mask;
 		if (rnp->qsmaskinit) {
@@ -2646,8 +2631,7 @@ static void rcu_cleanup_dying_idle_cpu(int cpu, struct rcu_state *rsp)
 
 	/* Remove outgoing CPU from mask in the leaf rcu_node structure. */
 	mask = rdp->grpmask;
-	raw_spin_lock_irqsave(&rnp->lock, flags);
-	smp_mb__after_unlock_lock();	/* Enforce GP memory-order guarantee. */
+	raw_spin_lock_irqsave_rcu_node(rnp, flags); /* Enforce GP memory-order guarantee. */
 	rnp->qsmaskinitnext &= ~mask;
 	raw_spin_unlock_irqrestore(&rnp->lock, flags);
 }
@@ -2844,8 +2828,7 @@ static void force_qs_rnp(struct rcu_state *rsp,
 	rcu_for_each_leaf_node(rsp, rnp) {
 		cond_resched_rcu_qs();
 		mask = 0;
-		raw_spin_lock_irqsave(&rnp->lock, flags);
-		smp_mb__after_unlock_lock();
+		raw_spin_lock_irqsave_rcu_node(rnp, flags);
 		if (rnp->qsmask == 0) {
 			if (rcu_state_p == &rcu_sched_state ||
 			    rsp != rcu_state_p ||
@@ -2916,8 +2899,7 @@ static void force_quiescent_state(struct rcu_state *rsp)
 	/* rnp_old == rcu_get_root(rsp), rnp == NULL. */
 
 	/* Reached the root of the rcu_node tree, acquire lock. */
-	raw_spin_lock_irqsave(&rnp_old->lock, flags);
-	smp_mb__after_unlock_lock();
+	raw_spin_lock_irqsave_rcu_node(rnp_old, flags);
 	raw_spin_unlock(&rnp_old->fqslock);
 	if (READ_ONCE(rsp->gp_flags) & RCU_GP_FLAG_FQS) {
 		rsp->n_force_qs_lh++;
@@ -2949,7 +2931,7 @@ __rcu_process_callbacks(struct rcu_state *rsp)
 	/* Does this CPU require a not-yet-started grace period? */
 	local_irq_save(flags);
 	if (cpu_needs_another_gp(rsp, rdp)) {
-		raw_spin_lock(&rcu_get_root(rsp)->lock); /* irqs disabled. */
+		raw_spin_lock_rcu_node(rcu_get_root(rsp)); /* irqs disabled. */
 		needwake = rcu_start_gp(rsp);
 		raw_spin_unlock_irqrestore(&rcu_get_root(rsp)->lock, flags);
 		if (needwake)
@@ -3040,8 +3022,7 @@ static void __call_rcu_core(struct rcu_state *rsp, struct rcu_data *rdp,
 		if (!rcu_gp_in_progress(rsp)) {
 			struct rcu_node *rnp_root = rcu_get_root(rsp);
 
-			raw_spin_lock(&rnp_root->lock);
-			smp_mb__after_unlock_lock();
+			raw_spin_lock_rcu_node(rnp_root);
 			needwake = rcu_start_gp(rsp);
 			raw_spin_unlock(&rnp_root->lock);
 			if (needwake)
@@ -3461,8 +3442,7 @@ static void sync_exp_reset_tree_hotplug(struct rcu_state *rsp)
 	 * CPUs for the current rcu_node structure up the rcu_node tree.
 	 */
 	rcu_for_each_leaf_node(rsp, rnp) {
-		raw_spin_lock_irqsave(&rnp->lock, flags);
-		smp_mb__after_unlock_lock();
+		raw_spin_lock_irqsave_rcu_node(rnp, flags);
 		if (rnp->expmaskinit == rnp->expmaskinitnext) {
 			raw_spin_unlock_irqrestore(&rnp->lock, flags);
 			continue;  /* No new CPUs, nothing to do. */
@@ -3482,8 +3462,7 @@ static void sync_exp_reset_tree_hotplug(struct rcu_state *rsp)
 		rnp_up = rnp->parent;
 		done = false;
 		while (rnp_up) {
-			raw_spin_lock_irqsave(&rnp_up->lock, flags);
-			smp_mb__after_unlock_lock();
+			raw_spin_lock_irqsave_rcu_node(rnp_up, flags);
 			if (rnp_up->expmaskinit)
 				done = true;
 			rnp_up->expmaskinit |= mask;
@@ -3507,8 +3486,7 @@ static void __maybe_unused sync_exp_reset_tree(struct rcu_state *rsp)
 
 	sync_exp_reset_tree_hotplug(rsp);
 	rcu_for_each_node_breadth_first(rsp, rnp) {
-		raw_spin_lock_irqsave(&rnp->lock, flags);
-		smp_mb__after_unlock_lock();
+		raw_spin_lock_irqsave_rcu_node(rnp, flags);
 		WARN_ON_ONCE(rnp->expmask);
 		rnp->expmask = rnp->expmaskinit;
 		raw_spin_unlock_irqrestore(&rnp->lock, flags);
@@ -3566,8 +3544,7 @@ static void __rcu_report_exp_rnp(struct rcu_state *rsp, struct rcu_node *rnp,
 		mask = rnp->grpmask;
 		raw_spin_unlock(&rnp->lock); /* irqs remain disabled */
 		rnp = rnp->parent;
-		raw_spin_lock(&rnp->lock); /* irqs already disabled */
-		smp_mb__after_unlock_lock();
+		raw_spin_lock_rcu_node(rnp); /* irqs already disabled */
 		WARN_ON_ONCE(!(rnp->expmask & mask));
 		rnp->expmask &= ~mask;
 	}
@@ -3584,8 +3561,7 @@ static void __maybe_unused rcu_report_exp_rnp(struct rcu_state *rsp,
 {
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&rnp->lock, flags);
-	smp_mb__after_unlock_lock();
+	raw_spin_lock_irqsave_rcu_node(rnp, flags);
 	__rcu_report_exp_rnp(rsp, rnp, wake, flags);
 }
 
@@ -3599,8 +3575,7 @@ static void rcu_report_exp_cpu_mult(struct rcu_state *rsp, struct rcu_node *rnp,
 {
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&rnp->lock, flags);
-	smp_mb__after_unlock_lock();
+	raw_spin_lock_irqsave_rcu_node(rnp, flags);
 	if (!(rnp->expmask & mask)) {
 		raw_spin_unlock_irqrestore(&rnp->lock, flags);
 		return;
@@ -3743,8 +3718,7 @@ static void sync_rcu_exp_select_cpus(struct rcu_state *rsp,
 
 	sync_exp_reset_tree(rsp);
 	rcu_for_each_leaf_node(rsp, rnp) {
-		raw_spin_lock_irqsave(&rnp->lock, flags);
-		smp_mb__after_unlock_lock();
+		raw_spin_lock_irqsave_rcu_node(rnp, flags);
 
 		/* Each pass checks a CPU for identity, offline, and idle. */
 		mask_ofl_test = 0;
@@ -3778,7 +3752,7 @@ retry_ipi:
 				mask_ofl_ipi &= ~mask;
 			} else {
 				/* Failed, raced with offline. */
-				raw_spin_lock_irqsave(&rnp->lock, flags);
+				raw_spin_lock_irqsave_rcu_node(rnp, flags);
 				if (cpu_online(cpu) &&
 				    (rnp->expmask & mask)) {
 					raw_spin_unlock_irqrestore(&rnp->lock,
@@ -3787,8 +3761,8 @@ retry_ipi:
 					if (cpu_online(cpu) &&
 					    (rnp->expmask & mask))
 						goto retry_ipi;
-					raw_spin_lock_irqsave(&rnp->lock,
-							      flags);
+					raw_spin_lock_irqsave_rcu_node(rnp,
+								       flags);
 				}
 				if (!(rnp->expmask & mask))
 					mask_ofl_ipi &= ~mask;
@@ -4170,7 +4144,7 @@ static void rcu_init_new_rnp(struct rcu_node *rnp_leaf)
 		rnp = rnp->parent;
 		if (rnp == NULL)
 			return;
-		raw_spin_lock(&rnp->lock); /* Interrupts already disabled. */
+		raw_spin_lock_rcu_node(rnp); /* Interrupts already disabled. */
 		rnp->qsmaskinit |= mask;
 		raw_spin_unlock(&rnp->lock); /* Interrupts remain disabled. */
 	}
@@ -4187,7 +4161,7 @@ rcu_boot_init_percpu_data(int cpu, struct rcu_state *rsp)
 	struct rcu_node *rnp = rcu_get_root(rsp);
 
 	/* Set up local state, ensuring consistent view of global state. */
-	raw_spin_lock_irqsave(&rnp->lock, flags);
+	raw_spin_lock_irqsave_rcu_node(rnp, flags);
 	rdp->grpmask = 1UL << (cpu - rdp->mynode->grplo);
 	rdp->dynticks = &per_cpu(rcu_dynticks, cpu);
 	WARN_ON_ONCE(rdp->dynticks->dynticks_nesting != DYNTICK_TASK_EXIT_IDLE);
@@ -4214,7 +4188,7 @@ rcu_init_percpu_data(int cpu, struct rcu_state *rsp)
 	struct rcu_node *rnp = rcu_get_root(rsp);
 
 	/* Set up local state, ensuring consistent view of global state. */
-	raw_spin_lock_irqsave(&rnp->lock, flags);
+	raw_spin_lock_irqsave_rcu_node(rnp, flags);
 	rdp->qlen_last_fqs_check = 0;
 	rdp->n_force_qs_snap = rsp->n_force_qs;
 	rdp->blimit = blimit;
@@ -4233,8 +4207,7 @@ rcu_init_percpu_data(int cpu, struct rcu_state *rsp)
 	 */
 	rnp = rdp->mynode;
 	mask = rdp->grpmask;
-	raw_spin_lock(&rnp->lock);		/* irqs already disabled. */
-	smp_mb__after_unlock_lock();
+	raw_spin_lock_rcu_node(rnp);		/* irqs already disabled. */
 	rnp->qsmaskinitnext |= mask;
 	rnp->expmaskinitnext |= mask;
 	if (!rdp->beenonline)
@@ -4360,7 +4333,7 @@ static int __init rcu_spawn_gp_kthread(void)
 		t = kthread_create(rcu_gp_kthread, rsp, "%s", rsp->name);
 		BUG_ON(IS_ERR(t));
 		rnp = rcu_get_root(rsp);
-		raw_spin_lock_irqsave(&rnp->lock, flags);
+		raw_spin_lock_irqsave_rcu_node(rnp, flags);
 		rsp->gp_kthread = t;
 		if (kthread_prio) {
 			sp.sched_priority = kthread_prio;
