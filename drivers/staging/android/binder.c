@@ -43,13 +43,13 @@
 #include "binder_trace.h"
 
 static HLIST_HEAD(binder_deferred_list);
-static DEFINE_MUTEX(binder_deferred_lock);
+static DEFINE_RT_MUTEX(binder_deferred_lock);
 
 static HLIST_HEAD(binder_devices);
 static HLIST_HEAD(binder_procs);
-static DEFINE_MUTEX(binder_procs_lock);
+static DEFINE_RT_MUTEX(binder_procs_lock);
 
-static DEFINE_MUTEX(binder_context_mgr_node_lock);
+static DEFINE_RT_MUTEX(binder_context_mgr_node_lock);
 
 static struct dentry *binder_debugfs_dir_entry_root;
 static struct dentry *binder_debugfs_dir_entry_proc;
@@ -3871,7 +3871,7 @@ static int binder_ioctl_set_inherit_fifo_prio(struct file *filp)
 	struct binder_context *context = proc->context;
 
 	kuid_t curr_euid = current_euid();
-	mutex_lock(&binder_context_mgr_node_lock);
+	rt_mutex_lock(&binder_context_mgr_node_lock);
 
 	if (uid_valid(context->binder_context_mgr_uid)) {
 		if (!uid_eq(context->binder_context_mgr_uid, curr_euid)) {
@@ -3887,7 +3887,7 @@ static int binder_ioctl_set_inherit_fifo_prio(struct file *filp)
 	context->inherit_fifo_prio = true;
 
  out:
-	mutex_unlock(&binder_context_mgr_node_lock);
+	rt_mutex_unlock(&binder_context_mgr_node_lock);
 	return ret;
 }
 
@@ -3901,7 +3901,7 @@ static int binder_ioctl_set_ctx_mgr(struct file *filp)
 	kuid_t curr_euid = current_euid();
 	struct binder_node *temp;
 
-	mutex_lock(&binder_context_mgr_node_lock);
+	rt_mutex_lock(&binder_context_mgr_node_lock);
 	if (context->binder_context_mgr_node) {
 		pr_err("BINDER_SET_CONTEXT_MGR already set\n");
 		ret = -EBUSY;
@@ -3936,7 +3936,7 @@ static int binder_ioctl_set_ctx_mgr(struct file *filp)
 	context->binder_context_mgr_node = temp;
 	binder_put_node(temp);
 out:
-	mutex_unlock(&binder_context_mgr_node_lock);
+	rt_mutex_unlock(&binder_context_mgr_node_lock);
 	return ret;
 }
 
@@ -4197,7 +4197,7 @@ static int binder_open(struct inode *nodp, struct file *filp)
 	proc->context = &binder_dev->context;
 	binder_alloc_init(&proc->alloc);
 
-	mutex_lock(&binder_procs_lock);
+	rt_mutex_lock(&binder_procs_lock);
 
 	binder_stats_created(BINDER_STAT_PROC);
 	hlist_add_head(&proc->proc_node, &binder_procs);
@@ -4215,7 +4215,7 @@ static int binder_open(struct inode *nodp, struct file *filp)
 	INIT_LIST_HEAD(&proc->waiting_threads);
 	filp->private_data = proc;
 
-	mutex_unlock(&binder_procs_lock);
+	rt_mutex_unlock(&binder_procs_lock);
 
 	if (binder_debugfs_dir_entry_proc) {
 		char strbuf[11];
@@ -4411,12 +4411,12 @@ static void binder_deferred_release(struct binder_proc *proc)
 	binder_queue_for_zombie_cleanup(proc);
 	binder_proc_unlock(proc, __LINE__);
 
-	mutex_lock(&binder_procs_lock);
+	rt_mutex_lock(&binder_procs_lock);
 	hlist_del_init(&proc->proc_node);
 	proc->is_zombie = true;
-	mutex_unlock(&binder_procs_lock);
+	rt_mutex_unlock(&binder_procs_lock);
 
-	mutex_lock(&binder_context_mgr_node_lock);
+	rt_mutex_lock(&binder_context_mgr_node_lock);
 	if (context->binder_context_mgr_node &&
 	    context->binder_context_mgr_node->proc == proc) {
 		binder_debug(BINDER_DEBUG_DEAD_BINDER,
@@ -4424,7 +4424,7 @@ static void binder_deferred_release(struct binder_proc *proc)
 			     __func__, proc->pid);
 		context->binder_context_mgr_node = NULL;
 	}
-	mutex_unlock(&binder_context_mgr_node_lock);
+	rt_mutex_unlock(&binder_context_mgr_node_lock);
 
 	threads = 0;
 	active_transactions = 0;
@@ -4624,7 +4624,7 @@ static void binder_deferred_func(struct work_struct *work)
 	int defer;
 
 	do {
-		mutex_lock(&binder_deferred_lock);
+		rt_mutex_lock(&binder_deferred_lock);
 		if (!hlist_empty(&binder_deferred_list)) {
 			proc = hlist_entry(binder_deferred_list.first,
 					struct binder_proc, deferred_work_node);
@@ -4635,7 +4635,7 @@ static void binder_deferred_func(struct work_struct *work)
 			proc = NULL;
 			defer = 0;
 		}
-		mutex_unlock(&binder_deferred_lock);
+		rt_mutex_unlock(&binder_deferred_lock);
 
 		if (defer & BINDER_DEFERRED_FLUSH)
 			binder_deferred_flush(proc);
@@ -4653,14 +4653,14 @@ static DECLARE_WORK(binder_deferred_work, binder_deferred_func);
 static void
 binder_defer_work(struct binder_proc *proc, enum binder_deferred_state defer)
 {
-	mutex_lock(&binder_deferred_lock);
+	rt_mutex_lock(&binder_deferred_lock);
 	proc->deferred_work |= defer;
 	if (hlist_unhashed(&proc->deferred_work_node)) {
 		hlist_add_head(&proc->deferred_work_node,
 				&binder_deferred_list);
 		queue_work(binder_deferred_workqueue, &binder_deferred_work);
 	}
-	mutex_unlock(&binder_deferred_lock);
+	rt_mutex_unlock(&binder_deferred_lock);
 }
 
 static void _print_binder_transaction(struct seq_file *m,
@@ -5069,10 +5069,10 @@ static int binder_state_show(struct seq_file *m, void *unused)
 
 	seq_puts(m, "binder state:\n");
 
-	mutex_lock(&binder_procs_lock);
+	rt_mutex_lock(&binder_procs_lock);
 	hlist_for_each_entry(proc, &binder_procs, proc_node)
 		print_binder_proc(m, proc, 1);
-	mutex_unlock(&binder_procs_lock);
+	rt_mutex_unlock(&binder_procs_lock);
 	return 0;
 }
 
@@ -5086,12 +5086,12 @@ static int binder_stats_show(struct seq_file *m, void *unused)
 
 	print_binder_stats(m, "", &binder_stats);
 
-	mutex_lock(&binder_procs_lock);
+	rt_mutex_lock(&binder_procs_lock);
 	hlist_for_each_entry(proc, &binder_procs, proc_node) {
 		proc_count++;
 		print_binder_proc_stats(m, proc);
 	}
-	mutex_unlock(&binder_procs_lock);
+	rt_mutex_unlock(&binder_procs_lock);
 
 	for (i = 0; i < SEQ_BUCKETS; i++) {
 		sum += binder_active_threads[i].active_count;
@@ -5115,10 +5115,10 @@ static int binder_transactions_show(struct seq_file *m, void *unused)
 	struct binder_proc *proc;
 
 	seq_puts(m, "binder transactions:\n");
-	mutex_lock(&binder_procs_lock);
+	rt_mutex_lock(&binder_procs_lock);
 	hlist_for_each_entry(proc, &binder_procs, proc_node)
 		print_binder_proc(m, proc, 0);
-	mutex_unlock(&binder_procs_lock);
+	rt_mutex_unlock(&binder_procs_lock);
 	return 0;
 }
 
@@ -5127,14 +5127,14 @@ static int binder_proc_show(struct seq_file *m, void *unused)
 	struct binder_proc *itr;
 	int pid = (unsigned long)m->private;
 
-	mutex_lock(&binder_procs_lock);
+	rt_mutex_lock(&binder_procs_lock);
 	hlist_for_each_entry(itr, &binder_procs, proc_node) {
 		if (itr->pid == pid) {
 			seq_puts(m, "binder proc state:\n");
 			print_binder_proc(m, itr, 1);
 		}
 	}
-	mutex_unlock(&binder_procs_lock);
+	rt_mutex_unlock(&binder_procs_lock);
 
 	return 0;
 }
