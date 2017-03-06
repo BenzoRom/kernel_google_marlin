@@ -1728,10 +1728,13 @@ static int lpm_cpuidle_enter(struct cpuidle_device *dev,
 #ifdef CONFIG_HTC_DEBUG_FOOTPRINT
 	struct lpm_cpu_level *level;
 #endif
-	bool success = true;
+	bool success = false;
 	const struct cpumask *cpumask = get_cpu_mask(dev->cpu);
 	int64_t start_time = ktime_to_ns(ktime_get()), end_time;
 	struct power_params *pwr_params;
+
+	if (idx < 0)
+		return -EINVAL;
 
 #ifdef CONFIG_HTC_DEBUG_FOOTPRINT
 	level = &cluster->cpu->levels[idx];
@@ -1741,7 +1744,7 @@ static int lpm_cpuidle_enter(struct cpuidle_device *dev,
 	cpu_prepare(cluster, idx, true);
 	cluster_prepare(cluster, cpumask, idx, true, ktime_to_ns(ktime_get()));
 
-	if (need_resched() || (idx < 0))
+	if (need_resched())
 		goto exit;
 
 	trace_cpu_idle_enter(idx);
