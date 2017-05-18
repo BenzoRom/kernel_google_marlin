@@ -1069,6 +1069,9 @@ static void cpufreq_init_policy(struct cpufreq_policy *policy)
 	pr_debug("Restoring CPU%d user policy min %d and max %d\n",
 		 policy->cpu, policy->min, policy->max);
 
+	/* Enable iowait boost for schedutil */
+	policy->iowait_boost_enable = true;
+
 	memcpy(&new_policy, policy, sizeof(*policy));
 
 	/* Update governor of new_policy to the governor used before hotplug */
