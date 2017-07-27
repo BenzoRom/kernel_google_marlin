@@ -447,7 +447,7 @@ static void binder_unfreeze_worklist(struct binder_worklist *wlist)
 
 static inline bool _binder_worklist_empty(struct binder_worklist *wlist)
 {
-	BUG_ON(!spin_is_locked(&wlist->lock));
+	assert_spin_locked(&wlist->lock);
 	return wlist->freeze || list_empty(&wlist->list);
 }
 
@@ -651,7 +651,7 @@ static struct binder_thread *binder_select_thread(struct binder_proc *proc)
 {
 	struct binder_thread *thread;
 
-	BUG_ON(!spin_is_locked(&proc->proc_lock));
+	assert_spin_locked(&proc->proc_lock);
 	thread = list_first_entry_or_null(&proc->waiting_threads,
 					  struct binder_thread,
 					  waiting_thread_node);
@@ -684,7 +684,7 @@ static void binder_wakeup_thread(struct binder_proc *proc,
 				 struct binder_thread *thread,
 				 bool sync)
 {
-	BUG_ON(!spin_is_locked(&proc->proc_lock));
+	assert_spin_locked(&proc->proc_lock);
 
 	if (thread) {
 		if (sync)
@@ -868,7 +868,7 @@ static void _binder_make_node_zombie(struct binder_node *node)
 	struct binder_proc *proc = node->proc;
 
 	BUG_ON(node->is_zombie);
-	BUG_ON(!spin_is_locked(&proc->proc_lock));
+	assert_spin_locked(&proc->proc_lock);
 	rb_erase(&node->rb_node, &proc->nodes);
 	INIT_HLIST_NODE(&node->dead_node);
 	node->is_zombie = true;
@@ -1351,7 +1351,7 @@ static void binder_pop_transaction(struct binder_thread *target_thread,
 				   struct binder_transaction *t)
 {
 	BUG_ON(!target_thread);
-	BUG_ON(!spin_is_locked(&target_thread->proc->proc_lock));
+	assert_spin_locked(&target_thread->proc->proc_lock);
 
 	BUG_ON(target_thread->transaction_stack != t);
 	/*
@@ -4713,7 +4713,7 @@ static void _print_binder_work(struct seq_file *m,
 	struct binder_node *node;
 	struct binder_transaction *t;
 
-	BUG_ON(!spin_is_locked(&w->wlist->lock));
+	assert_spin_locked(&w->wlist->lock);
 
 	switch (w->type) {
 	case BINDER_WORK_TRANSACTION:
@@ -4760,7 +4760,7 @@ static void _print_binder_thread(struct seq_file *m,
 	size_t start_pos = m->count;
 	size_t header_pos;
 
-	BUG_ON(!spin_is_locked(&thread->proc->proc_lock));
+	assert_spin_locked(&thread->proc->proc_lock);
 
 	seq_printf(m, "  thread %d: l %02x need_return %d\n",
 			thread->pid, thread->looper,
@@ -4800,7 +4800,7 @@ static void _print_binder_node(struct seq_file *m,
 	int count;
 	struct binder_proc *proc = node->proc;
 
-	BUG_ON(!spin_is_locked(&proc->proc_lock));
+	assert_spin_locked(&proc->proc_lock);
 
 	count = 0;
 	hlist_for_each_entry(ref, &node->refs, node_entry)
@@ -4828,7 +4828,7 @@ static void _print_binder_node(struct seq_file *m,
 static void _print_binder_ref(struct seq_file *m,
 			      struct binder_ref *ref)
 {
-	BUG_ON(!spin_is_locked(&ref->proc->proc_lock));
+	assert_spin_locked(&ref->proc->proc_lock);
 	seq_printf(m, "  ref %d: desc %d %snode %d s %d w %d d %pK\n",
 		   ref->debug_id, ref->desc, ref->node->proc ? "" : "dead ",
 		   ref->node->debug_id, atomic_read(&ref->strong),
